@@ -83,6 +83,7 @@ object DauApp{
       val mi = timeArr(1)
 
       // 将封装的样例类对象返回
+
       DauInfo(commonJsonObj.getString("mid"),
         commonJsonObj.getString("uid"),
         commonJsonObj.getString("ar"),
