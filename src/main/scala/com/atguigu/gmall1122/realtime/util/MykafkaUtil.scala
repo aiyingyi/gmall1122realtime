@@ -13,7 +13,7 @@ object MyKafkaUtil {
   private val properties: Properties = PropertiesUtil.load("config.properties")
   val broker_list = properties.getProperty("kafka.broker.list")
 
-  // kafka消费者配置
+  // kafka消费者默认配置，可以进行覆盖
   var kafkaParam = collection.mutable.Map(
     "bootstrap.servers" -> broker_list,//用于初始化链接到集群的地址
     "key.deserializer" -> classOf[StringDeserializer],
@@ -48,6 +48,7 @@ object MyKafkaUtil {
   }
 
 
+  // 根据偏移量从kafka中进行消费  offsets:Map[TopicPartition,Long]，offsets就是一个Map
 
   def getKafkaStream(topic: String,ssc:StreamingContext,offsets:Map[TopicPartition,Long],groupId:String): InputDStream[ConsumerRecord[String,String]]={
     kafkaParam("group.id")=groupId

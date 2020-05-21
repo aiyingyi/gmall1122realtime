@@ -7,10 +7,12 @@ import java.util.Date
 import com.alibaba.fastjson
 import com.alibaba.fastjson.{JSON, JSONObject}
 import com.atguigu.gmall1122.realtime.bean.DauInfo
-import com.atguigu.gmall1122.realtime.util.{MyEsUtil, MyKafkaUtil, RedisUtil}
+import com.atguigu.gmall1122.realtime.util.{MyEsUtil, MyKafkaUtil, OffsetManager, RedisUtil}
 import org.apache.kafka.clients.consumer.ConsumerRecord
+import org.apache.kafka.common.TopicPartition
 import org.apache.spark.SparkConf
 import org.apache.spark.streaming.dstream.{DStream, InputDStream}
+import org.apache.spark.streaming.kafka010.{HasOffsetRanges, OffsetRange}
 import org.apache.spark.streaming.{Seconds, StreamingContext}
 
 import scala.collection.mutable.ListBuffer
@@ -30,9 +32,36 @@ object DauApp{
     val ssc = new StreamingContext(sparkConf, Seconds(5))
     val groupId = "GMALL_DAU_CONSUMER"
     val topic = "GMALL_START"
-    val startInputDstream: InputDStream[ConsumerRecord[String, String]] = MyKafkaUtil.getKafkaStream(topic, ssc, groupId)
+
+    // 获取起始读取的offset
+    val startOffset: Map[TopicPartition, Long] = OffsetManager.getOffset(groupId, topic)
+
+    var startInputDstream: InputDStream[ConsumerRecord[String, String]] = null
+    /*
+        假如第一次从kafka中读取数据，redis还没有保存偏移量，那就先不通过偏移量读取，等第二次读取时再获取offset
+     */
+    if(startOffset != null && startOffset.size>0){
+      startInputDstream = MyKafkaUtil.getKafkaStream(topic, ssc, startOffset,groupId)
+      startInputDstream = MyKafkaUtil.getKafkaStream(topic, ssc, startOffset,groupId)
+    }else{
+      startInputDstream = MyKafkaUtil.getKafkaStream(topic, ssc, groupId)
+    }
+
+
+    //获得本批次偏移量的移动后的新位置
+    // 通过 DStream获取偏移量，类型  Array[OffsetRange]，OffsetRange有一个fromOffset和一个UntilOffset，我们主要需要UntilOffset
+    var startupOffsetRanges: Array[OffsetRange] =null
+    // offsetRanges 是一个数组，下标不是对应的分区号
+    val startupInputGetOffsetDstream: DStream[ConsumerRecord[String, String]] = startInputDstream.transform { rdd =>
+      // 将流中的rdd强转为HasOffsetRanges类型，并获取Array[OffsetRange]
+      startupOffsetRanges = rdd.asInstanceOf[HasOffsetRanges].offsetRanges
+      // 将原来的数据返回
+      rdd
+    }
+
+
     // 将流中的消息转换成json对象
-    val startJsonObjDstream: DStream[fastjson.JSONObject] = startInputDstream.map(
+    val startJsonObjDstream: DStream[fastjson.JSONObject] = startupInputGetOffsetDstream.map(
       record => {
         val jsonString: String = record.value()
         val jsonObject: fastjson.JSONObject = JSON.parseObject(jsonString)
@@ -68,8 +97,6 @@ object DauApp{
       jsonObjFilteredList.toIterator
 
     })
-
-
     // 将过滤好的数据插入到es中的gmall1122_dau_info*  索引中
     // 1. 转换数据结构，采用样例类封装
     val dauInfoDstream: DStream[DauInfo] = startJsonObjWithDauDstream.map(jsonObj => {
@@ -81,9 +108,7 @@ object DauApp{
       val timeArr: Array[String] = dateTimeArr(1).split(":")
       val hr = timeArr(0)
       val mi = timeArr(1)
-
       // 将封装的样例类对象返回
-
       DauInfo(commonJsonObj.getString("mid"),
         commonJsonObj.getString("uid"),
         commonJsonObj.getString("ar"),
@@ -94,20 +119,21 @@ object DauApp{
     })
 
     // 保存在es中,要使用行动算子
-    dauInfoDstream.foreachRDD(
-      rdd=>rdd.foreachPartition{dauInfoItr=> {
+    dauInfoDstream.foreachRDD {
+      rdd =>rdd.foreachPartition { dauInfoItr => {
+          // 将mid取出作为es中的主键
+          val dataList: List[(String, DauInfo)] = dauInfoItr.toList.map(dauInfo => (dauInfo.mid, dauInfo))
 
-        // 将mid取出作为es中的主键
-        val dataList: List[(String, DauInfo)] = dauInfoItr.toList.map(dauInfo => (dauInfo.mid, dauInfo))
-
-        // 利用当前日期，定义index
-        val dt = new SimpleDateFormat("yyyyMMdd").format(new Date())
-        val indexName = "gmall1122_dau_info_" + dt
-        // 批量写入。Bulk是jest的API，可以封装多个index操作
-        MyEsUtil.saveBulk(dataList, indexName)
+          // 利用当前日期，定义index
+          val dt = new SimpleDateFormat("yyyyMMdd").format(new Date())
+          val indexName = "gmall1122_dau_info_" + dt
+          // 批量写入。Bulk是jest的API，可以封装多个index操作
+          MyEsUtil.saveBulk(dataList, indexName)
         }
-      }
-    )
+        }
+        // 消费完成后，进行偏移量的提交
+        OffsetManager.saveOffset(groupId,topic,startupOffsetRanges)
+    }
     ssc.start()
     ssc.awaitTermination()
   }
