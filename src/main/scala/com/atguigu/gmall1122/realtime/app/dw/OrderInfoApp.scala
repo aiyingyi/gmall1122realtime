@@ -167,7 +167,7 @@ object OrderInfoApp {
 
         //list转map
         val provinceJsonObjMap: Map[Long, JSONObject] = provinceJsonObjList.map(jsonObj => (jsonObj.getLongValue("ID"), jsonObj)).toMap
-        //广播这个map，广播变量也可以在算子中进行创建
+        //广播这个map
         val provinceJsonObjMapBc: Broadcast[Map[Long, JSONObject]] = ssc.sparkContext.broadcast(provinceJsonObjMap)
         val orderInfoWithProvinceRDD: RDD[OrderInfo] = rdd.mapPartitions { orderInfoItr => //ex
         val provinceJsonObjMap: Map[Long, JSONObject] = provinceJsonObjMapBc.value //接收bc
@@ -232,13 +232,14 @@ object OrderInfoApp {
           val orderList: List[OrderInfo] = orderInfoItr.toList
           val orderWithKeyList: List[(String, OrderInfo)] = orderList.map(orderInfo=>(orderInfo.id.toString,orderInfo))
           val dateStr: String = new SimpleDateFormat("yyyyMMdd").format(new Date)
-        //  MyEsUtil.saveBulk(orderWithKeyList,"gmall1122_order_info-"+dateStr)
+//          MyEsUtil.saveBulk(orderWithKeyList,"gmall1122_order_info-"+dateStr)
+
+          // 将数据写入到kafka DW_ORDER_INFO
 
           for (orderInfo <- orderList ) {
             println(orderInfo)
             MyKafkaSink.send("DW_ORDER_INFO",orderInfo.id.toString,JSON.toJSONString(orderInfo,new SerializeConfig(true)))
           }
-
         }
 
       OffsetManager.saveOffset(groupId, topic, offsetRanges)

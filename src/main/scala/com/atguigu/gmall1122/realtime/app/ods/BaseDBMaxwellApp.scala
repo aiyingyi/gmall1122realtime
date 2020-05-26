@@ -17,9 +17,7 @@ object BaseDBMaxwellApp {
     val ssc = new StreamingContext(sparkConf,Seconds(5))
     val topic ="ODS_DB_GMALL1122_M";
     val groupId="base_db_maxwell_group"
-
     val offset: Map[TopicPartition, Long] = OffsetManager.getOffset(groupId,topic)
-
     var inputDstream: InputDStream[ConsumerRecord[String, String]]=null
     // 判断如果从redis中读取当前最新偏移量 则用该偏移量加载kafka中的数据  否则直接用kafka读出默认最新的数据
     if(offset!=null&&offset.size>0){
@@ -28,24 +26,19 @@ object BaseDBMaxwellApp {
     }else{
       inputDstream  = MyKafkaUtil.getKafkaStream(topic,ssc,groupId)
     }
-
     //取得偏移量步长
     var offsetRanges: Array[OffsetRange] =null
     val inputGetOffsetDstream: DStream[ConsumerRecord[String, String]] = inputDstream.transform { rdd =>
       offsetRanges = rdd.asInstanceOf[HasOffsetRanges].offsetRanges
       rdd
     }
-
     val dbJsonObjDstream: DStream[JSONObject] = inputGetOffsetDstream.map { record =>
       val jsonString: String = record.value()
       val jsonObj: JSONObject = JSON.parseObject(jsonString)
       jsonObj
-
     }
-    
     dbJsonObjDstream.foreachRDD{rdd=>
       rdd.foreachPartition { jsonObjItr =>
-
         for (jsonObj <- jsonObjItr) {
           val dataObj: JSONObject = jsonObj.getJSONObject("data")
           val tableName = jsonObj.getString("table")
@@ -66,18 +59,11 @@ object BaseDBMaxwellApp {
               }
               MyKafkaSink.send(topic, id, dataObj.toJSONString)
             }
-
-
-
         }
       }
       OffsetManager.saveOffset(groupId,topic,offsetRanges)
-      
     }
     ssc.start()
     ssc.awaitTermination()
-
-
   }
-
 }
